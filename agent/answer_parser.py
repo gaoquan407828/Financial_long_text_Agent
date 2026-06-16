@@ -61,16 +61,16 @@ def fallback_answer(question: Question, judgements: dict[str, OptionJudgement] |
 def parse_option_judgements(data: dict[str, Any] | None) -> dict[str, OptionJudgement]:
     if not data:
         return {}
-    raw = data.get("option_judgements") or {}
+    raw = data.get("option_judgements") or data.get("judgements") or data.get("opt") or {}
     parsed: dict[str, OptionJudgement] = {}
     for key, value in raw.items():
         key = str(key).upper()
         if key not in VALID:
             continue
         if isinstance(value, dict):
-            verdict = bool(value.get("verdict", False))
-            reason = str(value.get("reason", ""))
-            evidence_ids = [str(x) for x in value.get("evidence_ids", [])]
+            verdict = bool(value.get("verdict", value.get("v", False)))
+            reason = str(value.get("reason", value.get("r", "")))
+            evidence_ids = [str(x) for x in value.get("evidence_ids", value.get("e", []))]
         else:
             verdict = bool(value)
             reason = ""

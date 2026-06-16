@@ -148,23 +148,76 @@ uv run python scripts/package_submission.py --output outputs/submission.zip
 文档预处理：
 优先用 `PyMuPDF4LLM` 将 PDF 转成 Markdown，并保留页码标记；解析结果会保存为 `processed_data/markdown/*.md`。如果 Markdown 文本过少，则回退到 `pdftotext` / `pypdf`。OCR 作为可选兜底，不再默认启用。HTML 使用 BeautifulSoup 抽正文，TXT/MD/JSON 直接读取。
 
+如果财报、合同等表格密集 PDF 解析效果差，可以接入 MinerU。当前代码支持两种方式：
+
+1. 先离线用 MinerU 生成 Markdown，并放到 `processed_data/mineru_markdown/{doc_id}.md`。
+2. 设置环境变量 `MINERU_COMMAND`，让预处理阶段自动调用命令。命令模板可使用 `{pdf}`、`{output_dir}`、`{doc_id}` 占位符。
+
+示例：
+
+```bash
+export MINERU_COMMAND='magic-pdf -p {pdf} -o {output_dir}'
+uv run python scripts/preprocess.py --config config/default.yaml --domain financial_reports --force
+```
+
+如果服务器缺 Tesseract 语言包导致 `pymupdf4llm` 报 OCR 错，可以在服务器单独创建 `config/server.yaml`，把解析顺序改成 `pdftotext -> pypdf -> pymupdf4llm`。
+
 切分：
-按段落滚动聚合，保留页码、章节/条款标题、关键词和 overlap，不做纯固定长度硬切。
+按段落滚动聚合，保留页码、章节/条款标题、关键词和 overlap，不做纯固定长度硬切。新版会对超长表格/长段落做保守拆分，减少单块过长，同时检索阶段会补充相邻 chunk，降低语义断裂。
 
 检索：
-自定义 BM25 风格词法索引，加入 doc_id、标题、年份、金额、比例、条款编号、法规书名号等规则加权。A 榜优先限定题目给出的 `doc_ids`；B 榜先按题干和选项召回候选文档，再检索 chunk。
+自定义 BM25 风格词法索引，加入 doc_id、标题、年份、金额、比例、条款编号、法规书名号等规则加权。A 榜优先限定题目给出的 `doc_ids`；B 榜先按题干和选项召回候选文档，再检索 chunk。新版会为高分命中自动补充前后相邻 chunk，适合条款和表格跨段落场景。
 
 记忆压缩：
 第一版只做规则压缩，不额外调用模型。保留包含数字、条款、强约束词、责任范围、免赔、财务指标等关键信息的句子，并控制最终上下文长度。
 
 推理：
-每题一次 Qwen 调用，要求模型输出 JSON，逐选项给出 true/false、证据 id 和最终答案。后处理会强制规范答案格式。
+先识别题型，再按 calculation / comparison / judgement / fact_lookup 使用差异化模板。计算题会额外走代码数值抽取和公式试算，把结果写入 prompt；默认不直接代替模型作答。如果要允许高置信代码直答，可在 `config/default.yaml` 中打开：
+
+```yaml
+calculation:
+  enabled: true
+  direct_answer_enabled: true
+  direct_answer_min_confidence: 0.88
+```
+
+每题一次 Qwen 调用，要求模型输出极简 JSON，后处理会兼容 `judgements` / `option_judgements` 等字段并规范答案格式。
+
+## 远程服务器更新代码
+
+推荐用 GitHub 同步。你在本地修改并推送后，服务器执行：
+
+```bash
+cd ~/Financial_long_text_Agent
+git pull
+uv pip install -r requirements.txt
+uv run python -m compileall agent scripts
+uv run python scripts/preprocess.py --config config/default.yaml --force
+uv run python scripts/build_index.py --config config/default.yaml
+uv run python scripts/run_answer.py --questions dataset/questions/group_a --config config/default.yaml --limit 3
+```
+
+如果 GitHub 暂时不可用，可以从 Windows 本地同步到服务器：
+
+```powershell
+scp -r D:\Code\tianchi\agent D:\Code\tianchi\config D:\Code\tianchi\scripts D:\Code\tianchi\requirements.txt D:\Code\tianchi\pyproject.toml 用户名@服务器IP:~/Financial_long_text_Agent/
+```
+
+同步后在服务器重跑：
+
+```bash
+cd ~/Financial_long_text_Agent
+uv pip install -r requirements.txt
+uv run python -m compileall agent scripts
+uv run python scripts/preprocess.py --config config/default.yaml --force
+uv run python scripts/build_index.py --config config/default.yaml
+```
 
 ## 后续优化 TODO
 
-- 继续增强 PDF 版面恢复和表格抽取，尤其是复杂年报财务表。
-- 继续细化不同领域 chunk 策略，例如法规按条文、财报按表格、保险按责任/免责。
+- 用 MinerU 或其他版面模型专门重建财报、合同中的表格，并把表格标题、单位、年份列绑定到 chunk metadata。
+- 建立错误分析表，按 domain / question_kind / answer_format / 是否计算题统计错误。
+- 为财报计算题增加更强的指标识别和公式库，例如同比、毛利率、资产负债率、研发占比、现金流差额。
+- 为保险题增加责任/免责/等待期/给付公式的结构化抽取。
+- 为 B 榜无 `doc_ids` 场景增加多轮候选文档召回和交叉编码重排。
 - 实现真正的 Qwen 二次压缩或二次核验开关，并严格统计 token。
-- 继续优化 B 榜无 `doc_ids` 的候选文档召回策略。
-- 增加领域规则：财务指标同比计算、保险金额公式、债券条款日期和评级校验。
-- 建立 dev 标注集和错误分析报表，按 domain/type 迭代。

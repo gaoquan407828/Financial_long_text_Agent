@@ -20,6 +20,9 @@ class Retriever:
         self.per_option_top_k = int(config.get("per_option_top_k", 5))
         self.per_doc_probe_top_k = int(config.get("per_doc_probe_top_k", 2))
         self.max_evidence_chars = int(config.get("max_evidence_chars_per_chunk", 1200))
+        self.neighbor_window = int(config.get("neighbor_window", 0))
+        self.neighbor_max_seed_items = int(config.get("neighbor_max_seed_items", 10))
+        self.chunk_id_to_index = {chunk.chunk_id: idx for idx, chunk in enumerate(self.index.chunks)}
 
     def retrieve(self, question: Question) -> EvidenceBundle:
         candidate_doc_ids = set(question.doc_ids or [])
@@ -68,6 +71,7 @@ class Retriever:
                 )
                 self._add_hits(merged, probe_hits, option=None)
 
+        self._add_neighbor_chunks(merged, question)
         items = list(merged.values())
         items.sort(key=lambda item: item.score, reverse=True)
         for idx, item in enumerate(items, start=1):
@@ -131,6 +135,48 @@ class Retriever:
                 matched_terms=hit.get("matched_terms", []),
                 option=option,
             )
+
+    def _add_neighbor_chunks(self, merged: OrderedDict[str, EvidenceItem], question: Question) -> None:
+        if self.neighbor_window <= 0 or not merged:
+            return
+        seeds = sorted(merged.values(), key=lambda item: item.score, reverse=True)[: self.neighbor_max_seed_items]
+        for seed in seeds:
+            seed_idx = self.chunk_id_to_index.get(seed.chunk_id)
+            if seed_idx is None:
+                continue
+            for neighbor_idx in self._neighbor_indices(seed_idx, seed.doc_id):
+                chunk = self.index.chunks[neighbor_idx]
+                if question.domain and chunk.domain != question.domain:
+                    continue
+                if chunk.chunk_id in merged:
+                    continue
+                text = chunk.text[: self.max_evidence_chars].strip()
+                if not text:
+                    continue
+                merged[chunk.chunk_id] = EvidenceItem(
+                    evidence_id="",
+                    chunk_id=chunk.chunk_id,
+                    doc_id=chunk.doc_id,
+                    domain=chunk.domain,
+                    title=chunk.title,
+                    page_start=chunk.page_start,
+                    page_end=chunk.page_end,
+                    section_path=chunk.section_path,
+                    text=text,
+                    score=max(seed.score * 0.72, 0.01),
+                    matched_terms=["neighbor_context"],
+                    option=seed.option,
+                )
+
+    def _neighbor_indices(self, seed_idx: int, doc_id: str) -> list[int]:
+        indices = self.index.doc_to_chunk_indices.get(doc_id, [])
+        try:
+            position = indices.index(seed_idx)
+        except ValueError:
+            return []
+        start = max(0, position - self.neighbor_window)
+        end = min(len(indices), position + self.neighbor_window + 1)
+        return [indices[pos] for pos in range(start, end) if indices[pos] != seed_idx]
 
     def _question_query(self, question: Question) -> str:
         options = "\n".join(f"{k}. {v}" for k, v in sorted(question.options.items()))

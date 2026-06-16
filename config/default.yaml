@@ -45,6 +45,8 @@ retrieve_stage1_top_k_docs: 24
 retrieve_top_k_chunks: 24
 per_option_top_k: 5
 per_doc_probe_top_k: 2
+neighbor_window: 1
+neighbor_max_seed_items: 10
 max_context_chars: 16000
 max_evidence_chars_per_chunk: 1200
 option_coverage_min: 1
@@ -53,12 +55,22 @@ enable_qwen_compression: false
 whether_enable_second_pass: false
 allow_mock_when_no_api: false
 
+calculation:
+  enabled: true
+  direct_answer_enabled: false
+  direct_answer_min_confidence: 0.88
+
 pdf:
   parser_order:
+    - mineru
     - pymupdf4llm
     - pdftotext
     - pypdf
   save_markdown: true
+  mineru_markdown_dir: processed_data/mineru_markdown
+  mineru_output_dir: processed_data/mineru_output
+  mineru_command: ${MINERU_COMMAND:}
+  mineru_timeout_seconds: 1800
   pymupdf4llm_page_chunks: true
   pymupdf4llm_use_ocr: false
   pymupdf4llm_force_ocr: false

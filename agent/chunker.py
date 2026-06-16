@@ -52,25 +52,27 @@ class Chunker:
         buffer_len = 0
         section_path: list[str] = []
 
-        for block in blocks:
-            text = block["text"]
-            is_boundary = self._is_domain_boundary(document.domain, text)
-            if (SECTION_RE.match(text) or is_boundary) and len(text) <= 160:
-                section_path = self._update_section_path(section_path, text)
-            block["section_path"] = list(section_path)
+        for original_block in blocks:
+            split_blocks = self._split_large_block(original_block, max_chars, document.domain)
+            for block in split_blocks:
+                text = block["text"]
+                is_boundary = self._is_domain_boundary(document.domain, text)
+                if (SECTION_RE.match(text) or is_boundary) and len(text) <= 160:
+                    section_path = self._update_section_path(section_path, text)
+                block["section_path"] = list(section_path)
 
-            if buffer and is_boundary and buffer_len >= self.min_chunk_chars:
-                chunks.append(self._make_chunk(document, buffer, len(chunks)))
-                buffer = self._overlap_tail(buffer, overlap_chars)
-                buffer_len = sum(len(x["text"]) + 2 for x in buffer)
+                if buffer and is_boundary and buffer_len >= self.min_chunk_chars:
+                    chunks.append(self._make_chunk(document, buffer, len(chunks)))
+                    buffer = self._overlap_tail(buffer, overlap_chars)
+                    buffer_len = sum(len(x["text"]) + 2 for x in buffer)
 
-            if buffer and buffer_len + len(text) > max_chars:
-                chunks.append(self._make_chunk(document, buffer, len(chunks)))
-                buffer = self._overlap_tail(buffer, overlap_chars)
-                buffer_len = sum(len(x["text"]) + 2 for x in buffer)
+                if buffer and buffer_len + len(text) > max_chars:
+                    chunks.append(self._make_chunk(document, buffer, len(chunks)))
+                    buffer = self._overlap_tail(buffer, overlap_chars)
+                    buffer_len = sum(len(x["text"]) + 2 for x in buffer)
 
-            buffer.append(block)
-            buffer_len += len(text) + 2
+                buffer.append(block)
+                buffer_len += len(text) + 2
 
         if buffer and buffer_len >= self.min_chunk_chars:
             chunks.append(self._make_chunk(document, buffer, len(chunks)))
@@ -100,6 +102,42 @@ class Chunker:
             blocks.append({"text": stripped, "page": page, "char_start": cursor, "char_end": cursor + len(raw), "type": block_type})
             cursor += len(raw) + 2
         return blocks
+
+    def _split_large_block(self, block: dict[str, Any], max_chars: int, domain: str) -> list[dict[str, Any]]:
+        text = block["text"]
+        if len(text) <= int(max_chars * 1.15):
+            return [block]
+
+        prefer_lines = block.get("type") == "table" or domain in {"financial_reports", "financial_contracts"}
+        units = [line for line in text.splitlines() if line.strip()] if prefer_lines else re.split(r"(?<=[。！？；;])", text)
+        if len(units) <= 1:
+            units = [text[i : i + max_chars] for i in range(0, len(text), max_chars)]
+
+        split_blocks: list[dict[str, Any]] = []
+        current: list[str] = []
+        current_len = 0
+        offset = int(block["char_start"])
+        cursor = offset
+        hard_limit = max(self.min_chunk_chars, max_chars)
+
+        for unit in units:
+            unit = unit.strip()
+            if not unit:
+                continue
+            if current and current_len + len(unit) + 1 > hard_limit:
+                split_text = "\n".join(current) if prefer_lines else "".join(current)
+                split_blocks.append({**block, "text": split_text, "char_start": cursor, "char_end": cursor + len(split_text)})
+                cursor += len(split_text)
+                current = []
+                current_len = 0
+            current.append(unit)
+            current_len += len(unit) + 1
+
+        if current:
+            split_text = "\n".join(current) if prefer_lines else "".join(current)
+            split_blocks.append({**block, "text": split_text, "char_start": cursor, "char_end": cursor + len(split_text)})
+
+        return split_blocks or [block]
 
     def _update_section_path(self, path: list[str], heading: str) -> list[str]:
         heading = heading.strip().lstrip("#").strip()

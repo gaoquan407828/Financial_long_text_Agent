@@ -1,61 +1,182 @@
-system: |
-  你是金融长文本问答比赛中的严谨答题 Agent。你必须只依据用户给出的证据材料判断选项，不得使用外部知识补充事实。
-  输出必须是一个合法 JSON 对象，不要输出 Markdown、解释性前缀或后缀。
+system: ""
 
 domain_guidance:
-  insurance: |
-    领域提示：保险条款题要优先核对保险责任、责任免除、等待期、免赔额、给付/赔付公式、现金价值、账户价值、身故保险金、退保规则和领取状态。遇到金额计算时，先判断适用条款，再比较题干给定数值和选项结果。
-  regulatory: |
-    领域提示：监管法规题要优先定位具体条、款、项，严格区分“应当/必须/不得/可以/无需”等效力词，核对施行日期、报告期限、适用主体、审批或披露程序。若选项把普通决议说成特别决议，或把报告类型/期限偷换，要据条文判断。
-  financial_contracts: |
-    领域提示：金融合同/债券题要优先核对发行人、发行规模、期限、评级、主承销商、受托管理人、违约责任、回售/赎回/转股条款、日期和比例。跨文档比较时不能混淆 text 编号和发行主体。
-  financial_reports: |
-    领域提示：财报题要优先核对年份、公司名称、营业收入、归母净利润、经营现金流、研发投入、分红/回购金额和同比变化。涉及比较或计算时，分别列出两个年份/公司的数值，再判断选项。
-  research: |
-    领域提示：研报题要优先核对行业、时间窗口、市场规模、增速、预测年份、公司名称、指标单位和结论来源。注意“亿元/亿美元/人民币”“同比/复合增速”“预计/已经实现”的区别。
-  default: |
-    领域提示：优先核对题干实体、年份、金额、比例、强约束词和选项中的细微差别；证据不足时保守判断。
+  insurance: "保险题优先核对保险责任、责任免除、等待期、免赔、给付公式、现金价值、账户价值、退保和领取状态。"
+  regulatory: "法规题优先定位具体条款，严格区分应当、必须、不得、可以、无需，核对主体、期限、程序和施行日期。"
+  financial_contracts: "合同/债券题优先核对发行人、金额、期限、评级、承销商、受托管理人、违约、回售、赎回、转股、日期和比例。"
+  financial_reports: "财报题优先核对年份、公司、营业收入、归母净利润、经营现金流、研发、分红回购、同比和单位。"
+  research: "研报题优先核对行业、时间、规模、增速、预测年份、公司、单位和结论来源。"
+  default: "优先核对实体、年份、金额、比例、强约束词和选项差异。"
+
+question_guidance:
+  calculation: "这是计算题。先用代码计算提示核验公式和值，再回到证据确认口径、单位和年份；不要心算。"
+  comparison: "这是比较题。逐项列出被比较对象的证据值，注意单位、年份、主体不能混淆。"
+  judgement: "这是判断题。重点检查强约束词、否定词、适用条件、例外条件和偷换概念。"
+  fact_lookup: "这是事实定位题。优先用最直接证据，不要外推。"
+  default: "基于证据逐项判断。"
 
 answer_prompt: |
-  请基于证据逐项判断题目的选项真伪，并给出最终答案。
-
-  关键要求：
-  1. 只能依据下方证据作答；证据不足时要保守判断。
-  2. 必须关注时间、金额、比例、条款适用条件、例外条件、责任范围，以及“必须、可以、不得、应当、无需”等强约束词。
-  3. 多文档题要比较不同文档中的同类指标或条款，不能混淆年份、公司、产品、法规名称。
-  4. 对每个选项都输出 true/false 判断，并引用相关 evidence_id。
-  5. 最终答案必须符合题型：
-     - mcq：只输出一个 A/B/C/D。
-     - multi：输出所有正确选项，按字母排序，不加分隔符。
-     - tf：只输出 A 或 B，含义以题目选项为准。
-  6. 如果证据中包含“每个选项证据提示”，请逐项使用对应提示和全局证据综合判断。
-
-  {domain_guidance}
-
-  输出 JSON 格式：
-  {{
-    "qid": "{qid}",
-    "option_judgements": {{
-      "A": {{"verdict": true, "reason": "...", "evidence_ids": ["E1"]}},
-      "B": {{"verdict": false, "reason": "...", "evidence_ids": ["E2"]}},
-      "C": {{"verdict": false, "reason": "...", "evidence_ids": []}},
-      "D": {{"verdict": false, "reason": "...", "evidence_ids": []}}
-    }},
-    "answer": "A",
-    "confidence": 0.0
-  }}
-
-  题目：
-  qid: {qid}
-  domain: {domain}
-  answer_format: {answer_format}
-  type: {question_type}
-
-  题干：
-  {question}
+  只返回 JSON，不要 Markdown，不要解释性前后缀。
 
   选项：
   {options}
 
+  题干：
+  qid: {qid}
+  domain: {domain}
+  answer_format: {answer_format}
+  question_type: {question_type}
+  question_kind: {question_kind}
+  {question}
+
+  任务规则：
+  - 只能依据证据和代码计算提示作答。
+  - 对每个选项给 true/false；最终 answer 必须符合 answer_format。
+  - mcq/tf 只输出一个字母；multi 输出所有正确选项，按字母排序，无分隔符。
+  - 证据不足时保守判断，不要用外部知识补充。
+  - 输出尽量短，reason 不超过 20 个汉字。
+
+  领域提示：{domain_guidance}
+  题型提示：{question_guidance}
+
+  题型识别：
+  {analysis_hint}
+
+  {calculation_context}
+
   证据：
   {evidence_context}
+
+  输出格式：
+  {{"answer":"A","judgements":{{"A":true,"B":false,"C":false,"D":false}},"e":["E1"],"confidence":0.0}}
+
+question_templates:
+  calculation: |
+    只返回 JSON，不要 Markdown，不要解释性前后缀。
+
+    先看选项，再做数值核验：
+    {options}
+
+    题干：
+    qid: {qid}
+    domain: {domain}
+    answer_format: {answer_format}
+    question_type: {question_type}
+    question_kind: {question_kind}
+    {question}
+
+    规则：
+    - 这是计算/数值题，必须先参考代码计算提示。
+    - 回到证据核对：主体、年份、单位、指标口径、同比/占比/差额公式。
+    - 代码结果和证据口径冲突时，以证据原文和正确公式为准。
+    - 只返回 JSON，reason 不超过 20 个汉字。
+
+    领域提示：{domain_guidance}
+    题型提示：{question_guidance}
+
+    题型识别：
+    {analysis_hint}
+
+    {calculation_context}
+
+    证据：
+    {evidence_context}
+
+    输出格式：
+    {{"answer":"A","judgements":{{"A":true,"B":false,"C":false,"D":false}},"e":["E1"],"confidence":0.0}}
+
+  comparison: |
+    只返回 JSON，不要 Markdown，不要解释性前后缀。
+
+    选项：
+    {options}
+
+    题干：
+    qid: {qid}
+    domain: {domain}
+    answer_format: {answer_format}
+    question_type: {question_type}
+    question_kind: {question_kind}
+    {question}
+
+    规则：
+    - 这是比较题，先找每个比较对象的同口径证据。
+    - 年份、主体、产品、单位、条款名不同则不能直接比较。
+    - 只返回 JSON，reason 不超过 20 个汉字。
+
+    领域提示：{domain_guidance}
+    题型提示：{question_guidance}
+    题型识别：
+    {analysis_hint}
+
+    {calculation_context}
+
+    证据：
+    {evidence_context}
+
+    输出格式：
+    {{"answer":"A","judgements":{{"A":true,"B":false,"C":false,"D":false}},"e":["E1"],"confidence":0.0}}
+
+  judgement: |
+    只返回 JSON，不要 Markdown，不要解释性前后缀。
+
+    选项：
+    {options}
+
+    题干：
+    qid: {qid}
+    domain: {domain}
+    answer_format: {answer_format}
+    question_type: {question_type}
+    question_kind: {question_kind}
+    {question}
+
+    规则：
+    - 这是判断题，重点检查强约束词、否定词、适用条件和例外。
+    - 不要因为语义相似就判真，必须能被证据直接支持。
+    - 只返回 JSON，reason 不超过 20 个汉字。
+
+    领域提示：{domain_guidance}
+    题型提示：{question_guidance}
+    题型识别：
+    {analysis_hint}
+
+    {calculation_context}
+
+    证据：
+    {evidence_context}
+
+    输出格式：
+    {{"answer":"A","judgements":{{"A":true,"B":false,"C":false,"D":false}},"e":["E1"],"confidence":0.0}}
+
+  fact_lookup: |
+    只返回 JSON，不要 Markdown，不要解释性前后缀。
+
+    选项：
+    {options}
+
+    题干：
+    qid: {qid}
+    domain: {domain}
+    answer_format: {answer_format}
+    question_type: {question_type}
+    question_kind: {question_kind}
+    {question}
+
+    规则：
+    - 这是事实定位题，优先使用最直接 evidence_id。
+    - 多文档时不要混淆 doc_id、年份、公司或产品。
+    - 只返回 JSON，reason 不超过 20 个汉字。
+
+    领域提示：{domain_guidance}
+    题型提示：{question_guidance}
+    题型识别：
+    {analysis_hint}
+
+    {calculation_context}
+
+    证据：
+    {evidence_context}
+
+    输出格式：
+    {{"answer":"A","judgements":{{"A":true,"B":false,"C":false,"D":false}},"e":["E1"],"confidence":0.0}}

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -126,7 +127,10 @@ class DocumentLoader:
         parser = "unparsed"
         for parser_name in parser_order:
             parser_name = str(parser_name).lower()
-            if parser_name == "pymupdf4llm":
+            if parser_name == "mineru":
+                pages = self._pdf_markdown_with_mineru(path, metadata)
+                parser = "mineru"
+            elif parser_name == "pymupdf4llm":
                 pages = self._pdf_markdown_with_pymupdf4llm(path, metadata)
                 parser = "pymupdf4llm"
             elif parser_name == "pdftotext" and command_exists("pdftotext"):
@@ -192,6 +196,84 @@ class DocumentLoader:
             return []
 
         pages = self._normalize_pymupdf4llm_output(markdown)
+        return pages
+
+    def _pdf_markdown_with_mineru(self, path: Path, metadata: dict[str, Any]) -> list[dict[str, Any]]:
+        markdown_path = self._find_mineru_markdown(path, metadata)
+        if markdown_path:
+            self.logger.info("using MinerU markdown for %s: %s", path, markdown_path)
+            return self._markdown_file_to_pages(markdown_path, source="mineru_markdown")
+
+        command_template = str(self.pdf_config.get("mineru_command") or "").strip()
+        if not command_template:
+            return []
+
+        output_dir = ensure_dir(resolve_path(self.pdf_config.get("mineru_output_dir", "processed_data/mineru_output")))
+        doc_output_dir = ensure_dir(output_dir / str(metadata["doc_id"]))
+        command = command_template.format(pdf=str(path), output_dir=str(doc_output_dir), doc_id=str(metadata["doc_id"]))
+        self.logger.info("running MinerU command for %s", path)
+        try:
+            result = run_command(shlex.split(command), timeout=int(self.pdf_config.get("mineru_timeout_seconds", 1800)))
+        except Exception as exc:
+            self.logger.warning("MinerU command failed for %s: %s", path, exc)
+            return []
+        if result.returncode != 0:
+            self.logger.warning("MinerU command failed for %s: %s", path, result.stderr.strip()[:1000])
+            return []
+
+        markdown_path = self._find_mineru_markdown(path, metadata, extra_root=doc_output_dir)
+        if not markdown_path:
+            self.logger.warning("MinerU produced no markdown for %s in %s", path, doc_output_dir)
+            return []
+        return self._markdown_file_to_pages(markdown_path, source="mineru_markdown")
+
+    def _find_mineru_markdown(
+        self,
+        path: Path,
+        metadata: dict[str, Any],
+        extra_root: Path | None = None,
+    ) -> Path | None:
+        roots = []
+        configured = self.pdf_config.get("mineru_markdown_dir")
+        if configured:
+            roots.append(resolve_path(configured))
+        if extra_root:
+            roots.append(extra_root)
+        names = [
+            f"{metadata['doc_id']}.md",
+            f"{path.stem}.md",
+            "full.md",
+            "output.md",
+        ]
+        for root in roots:
+            for name in names:
+                candidate = root / name
+                if candidate.exists():
+                    return candidate
+            if root.exists():
+                matches = sorted(root.rglob("*.md"))
+                if matches:
+                    return matches[0]
+        return None
+
+    def _markdown_file_to_pages(self, path: Path, source: str) -> list[dict[str, Any]]:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        pages: list[dict[str, Any]] = []
+        current_page = 1
+        buffer: list[str] = []
+        for line in text.splitlines():
+            page_match = re.search(r"<!--\s*page:\s*(\d+)\s*-->|^\s*\[PAGE\s+(\d+)]", line, flags=re.I)
+            if page_match:
+                if buffer:
+                    pages.append({"page": current_page, "text": compact_whitespace("\n".join(buffer)), "source": source})
+                    buffer = []
+                current_page = int(page_match.group(1) or page_match.group(2))
+                continue
+            buffer.append(line)
+        if buffer:
+            pages.append({"page": current_page, "text": compact_whitespace("\n".join(buffer)), "source": source})
+        if not pages and text.strip():
+            pages.append({"page": 1, "text": compact_whitespace(text), "source": source})
         return pages
 
     def _normalize_pymupdf4llm_output(self, markdown: Any) -> list[dict[str, Any]]:

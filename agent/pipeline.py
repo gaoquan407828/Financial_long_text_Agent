@@ -31,7 +31,7 @@ class Pipeline:
         self.prompt_builder = PromptBuilder(config)
         self.client = QwenClient(config, tracker=self.tracker, logger=self.logger, dry_run=dry_run)
         self.client.validate_configuration()
-        self.reasoner = Reasoner(self.client, self.prompt_builder, self.logger)
+        self.reasoner = Reasoner(self.client, self.prompt_builder, config, self.logger)
 
     def run(self, questions_path: Path, limit: int | None = None, output_dir: Path | None = None) -> list[AnswerResult]:
         questions = load_questions(questions_path)
