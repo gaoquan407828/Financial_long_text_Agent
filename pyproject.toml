@@ -1,0 +1,25 @@
+[project]
+name = "financial-longtext-agent"
+version = "0.1.0"
+description = "AFAC2026 financial long-text Agent baseline with lexical RAG, memory compression, and Qwen inference."
+readme = "readme.md"
+requires-python = ">=3.10"
+dependencies = [
+  "PyYAML>=6.0.1",
+  "requests>=2.31.0",
+  "python-dotenv>=1.0.1",
+  "beautifulsoup4>=4.12.3",
+  "pymupdf4llm>=0.2.0",
+  "pypdf>=4.2.0",
+  "pdfplumber>=0.11.0",
+  "PyMuPDF>=1.24.0",
+  "pytesseract>=0.3.10",
+  "Pillow>=10.3.0",
+  "tqdm>=4.66.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 120
