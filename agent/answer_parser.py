@@ -29,8 +29,8 @@ def extract_json_object(text: str) -> dict[str, Any] | None:
     return None
 
 
-def normalize_answer(answer: str | None, question: Question, judgements: dict[str, OptionJudgement] | None = None) -> str:
-    answer = (answer or "").upper()
+def normalize_answer(answer: Any, question: Question, judgements: dict[str, OptionJudgement] | None = None) -> str:
+    answer = _answer_to_text(answer).upper()
     letters = [ch for ch in answer if ch in VALID]
     option_keys = set(question.options.keys()) or VALID
     if question.answer_format in {"mcq", "tf"}:
@@ -42,6 +42,25 @@ def normalize_answer(answer: str | None, question: Question, judgements: dict[st
     if normalized:
         return normalized
     return fallback_answer(question, judgements)
+
+
+def _answer_to_text(answer: Any) -> str:
+    if answer is None:
+        return ""
+    if isinstance(answer, str):
+        return answer
+    if isinstance(answer, (list, tuple, set)):
+        return "".join(_answer_to_text(item) for item in answer)
+    if isinstance(answer, dict):
+        for key in ("answer", "value", "choice", "choices", "letters"):
+            if key in answer:
+                return _answer_to_text(answer[key])
+        selected = []
+        for key, value in answer.items():
+            if str(key).upper() in VALID and bool(value):
+                selected.append(str(key))
+        return "".join(selected)
+    return str(answer)
 
 
 def fallback_answer(question: Question, judgements: dict[str, OptionJudgement] | None = None) -> str:
@@ -63,7 +82,19 @@ def parse_option_judgements(data: dict[str, Any] | None) -> dict[str, OptionJudg
         return {}
     raw = data.get("option_judgements") or data.get("judgements") or data.get("opt") or {}
     parsed: dict[str, OptionJudgement] = {}
-    for key, value in raw.items():
+    if isinstance(raw, list):
+        iterable = []
+        for item in raw:
+            if isinstance(item, dict):
+                key = item.get("option") or item.get("key") or item.get("letter")
+                if key:
+                    iterable.append((key, item))
+        raw_items = iterable
+    elif isinstance(raw, dict):
+        raw_items = list(raw.items())
+    else:
+        raw_items = []
+    for key, value in raw_items:
         key = str(key).upper()
         if key not in VALID:
             continue

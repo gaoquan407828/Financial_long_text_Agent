@@ -30,6 +30,10 @@ class Reasoner:
         self.prompt_builder = prompt_builder
         self.analyzer = QuestionAnalyzer(self.config)
         self.calculator = CalculationSolver(self.config, logger)
+        self.second_pass_enabled = bool(self.config.get("whether_enable_second_pass", False))
+        self.second_pass_min_confidence = float(self.config.get("second_pass_min_confidence", 0.68))
+        self.second_pass_formats = set(self.config.get("second_pass_answer_formats", ["multi", "tf"]))
+        self.second_pass_kinds = set(self.config.get("second_pass_question_kinds", ["calculation", "comparison"]))
         self.logger = logger or logging.getLogger(__name__)
 
     def answer(
@@ -85,6 +89,28 @@ class Reasoner:
             confidence = float((data or {}).get("confidence", 0.0) or 0.0) if data else 0.0
             if not answer:
                 answer = extract_answer_from_text(raw_output, question)
+            if self._should_second_pass(question, analysis, confidence, answer):
+                second = self._second_pass(
+                    question=question,
+                    compact_context=compact_context,
+                    analysis=analysis,
+                    calculation_context=calculation_context,
+                    first_answer=answer,
+                    first_raw_output=raw_output,
+                )
+                if second is not None:
+                    answer, second_judgements, second_raw, second_usage, second_confidence = second
+                    usage.add(second_usage)
+                    judgements = second_judgements or judgements
+                    raw_output = json.dumps(
+                        {
+                            "first_output": raw_output,
+                            "second_output": second_raw,
+                            "final_answer": answer,
+                        },
+                        ensure_ascii=False,
+                    )
+                    confidence = second_confidence
         except QwenClientError:
             raise
         except Exception as exc:
@@ -103,6 +129,55 @@ class Reasoner:
             confidence=confidence,
             error=error,
         )
+
+    def _should_second_pass(
+        self,
+        question: Question,
+        analysis: Any,
+        confidence: float,
+        answer: str,
+    ) -> bool:
+        if not self.second_pass_enabled:
+            return False
+        if not answer:
+            return True
+        if question.answer_format in self.second_pass_formats:
+            return True
+        if getattr(analysis, "kind", "") in self.second_pass_kinds:
+            return True
+        return confidence > 0 and confidence < self.second_pass_min_confidence
+
+    def _second_pass(
+        self,
+        question: Question,
+        compact_context: str,
+        analysis: Any,
+        calculation_context: str,
+        first_answer: str,
+        first_raw_output: str,
+    ) -> tuple[str, dict[str, OptionJudgement], str, TokenUsage, float] | None:
+        try:
+            messages = self.prompt_builder.build_validation_messages(
+                question=question,
+                evidence_context=compact_context,
+                first_answer=first_answer,
+                raw_output=first_raw_output,
+                analysis=analysis,
+                calculation_context=calculation_context,
+            )
+            chat_result = self.client.chat(messages, qid=f"{question.qid}#verify")
+            data = extract_json_object(chat_result.content)
+            judgements = parse_option_judgements(data)
+            answer = normalize_answer((data or {}).get("answer") if data else None, question, judgements)
+            if not answer:
+                answer = extract_answer_from_text(chat_result.content, question)
+            confidence = float((data or {}).get("confidence", 0.0) or 0.0) if data else 0.0
+            return answer, judgements, chat_result.content, chat_result.usage, confidence
+        except QwenClientError:
+            raise
+        except Exception as exc:
+            self.logger.warning("second pass failed for %s: %s", question.qid, exc)
+            return None
 
     def _build_result(
         self,

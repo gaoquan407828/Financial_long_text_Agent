@@ -183,6 +183,26 @@ calculation:
 
 每题一次 Qwen 调用，要求模型输出极简 JSON，后处理会兼容 `judgements` / `option_judgements` 等字段并规范答案格式。
 
+54 分后优化版默认开启了更激进的证据召回、证据重排和多选/计算/比较题二次核验：
+
+```yaml
+retrieve_top_k_chunks: 36
+per_option_top_k: 8
+option_coverage_min: 2
+max_context_chars: 24000
+whether_enable_second_pass: true
+```
+
+这会增加 token 成本，但更适合冲分。如果只是本地调试或想省钱，可以把 `whether_enable_second_pass` 改回 `false`，并适当降低 `max_context_chars`。
+
+运行后可生成诊断报告：
+
+```powershell
+uv run python scripts/analyze_run.py --config config/default.yaml --questions dataset/questions/group_a --answers outputs/answer.csv --evidence outputs/evidence.json
+```
+
+如果问题文件里带标准答案，报告会按 domain、answer_format、question_kind 统计准确率；如果没有标准答案，也会统计空证据、报错、题型分布，方便定位瓶颈。
+
 ## 远程服务器更新代码
 
 推荐用 GitHub 同步。你在本地修改并推送后，服务器执行：

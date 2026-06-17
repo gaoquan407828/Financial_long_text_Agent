@@ -40,19 +40,31 @@ domain_chunking:
     max_chars: 2200
     overlap_chars: 320
 
-retrieve_top_k_docs: 8
-retrieve_stage1_top_k_docs: 24
-retrieve_top_k_chunks: 24
-per_option_top_k: 5
-per_doc_probe_top_k: 2
+retrieve_top_k_docs: 10
+retrieve_stage1_top_k_docs: 36
+retrieve_top_k_chunks: 36
+per_option_top_k: 8
+per_doc_probe_top_k: 3
 neighbor_window: 1
-neighbor_max_seed_items: 10
-max_context_chars: 16000
-max_evidence_chars_per_chunk: 1200
-option_coverage_min: 1
+neighbor_max_seed_items: 12
+evidence_rerank_weight: 1.0
+numeric_match_boost: 2.0
+metric_match_boost: 1.4
+option_match_boost: 1.2
+max_context_chars: 24000
+max_evidence_chars_per_chunk: 1600
+max_compressed_chars_per_chunk: 1800
+table_line_neighbor_window: 1
+option_coverage_min: 2
 enable_qwen_compression: false
 
-whether_enable_second_pass: false
+whether_enable_second_pass: true
+second_pass_min_confidence: 0.68
+second_pass_answer_formats:
+  - multi
+second_pass_question_kinds:
+  - calculation
+  - comparison
 allow_mock_when_no_api: false
 
 calculation:

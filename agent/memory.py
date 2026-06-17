@@ -18,24 +18,29 @@ class MemoryManager:
         self.max_context_chars = int(config.get("max_context_chars", 16000))
         self.option_coverage_min = int(config.get("option_coverage_min", 1))
         self.enable_qwen_compression = bool(config.get("enable_qwen_compression", False))
+        self.max_compressed_chars_per_chunk = int(config.get("max_compressed_chars_per_chunk", 1500))
+        self.table_line_neighbor_window = int(config.get("table_line_neighbor_window", 1))
         self.logger = logger or logging.getLogger(__name__)
 
     def compact(self, question: Question, bundle: EvidenceBundle) -> tuple[str, list[EvidenceItem]]:
         selected: list[EvidenceItem] = self._option_coverage_items(question, bundle)
         total = 0
-        seen_text: set[str] = {self._dedup_key(item.text) for item in selected}
+        seen_text: set[str] = set()
+        seen_chunks: set[str] = set()
         formatted_selected: list[EvidenceItem] = []
 
         for item in selected + bundle.items:
+            if item.chunk_id in seen_chunks:
+                continue
             text = self._compress_text(question, item.text, item.option)
             if len(text) < 30:
                 continue
             key = self._dedup_key(text)
             if key in seen_text:
-                if item not in selected:
-                    continue
+                continue
             else:
                 seen_text.add(key)
+            seen_chunks.add(item.chunk_id)
             new_item = self._clone_with_text(item, text)
             block_len = len(self._format_item(new_item))
             if formatted_selected and total + block_len > self.max_context_chars:
@@ -62,10 +67,13 @@ class MemoryManager:
 
     def _compress_text(self, question: Question, text: str, option: str | None = None) -> str:
         sentences = self._split_sentences(text)
-        if len(text) <= 900:
+        if len(text) <= self.max_compressed_chars_per_chunk:
             return text
         q_terms = self._query_terms(question)
         option_terms = self._option_terms(question, option)
+        line_context = self._compress_by_lines(text, q_terms, option_terms)
+        if line_context:
+            return line_context
         ranked = sorted(
             ((self._sentence_score(sentence, q_terms, option_terms), idx, sentence) for idx, sentence in enumerate(sentences)),
             key=lambda x: (-x[0], x[1]),
@@ -78,9 +86,9 @@ class MemoryManager:
         for sentence in kept_ranked:
             kept.append(sentence)
             total += len(sentence)
-            if total >= 1000:
+            if total >= self.max_compressed_chars_per_chunk:
                 break
-        return "\n".join(kept).strip()[:1300]
+        return "\n".join(kept).strip()[: self.max_compressed_chars_per_chunk]
 
     def _sentence_score(self, sentence: str, q_terms: list[str], option_terms: list[str]) -> float:
         score = 0.0
@@ -100,6 +108,39 @@ class MemoryManager:
         if not sentences:
             sentences = [line.strip() for line in text.splitlines() if len(line.strip()) >= 8]
         return sentences
+
+    def _compress_by_lines(self, text: str, q_terms: list[str], option_terms: list[str]) -> str:
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if len(lines) < 4:
+            return ""
+        scored = []
+        for idx, line in enumerate(lines):
+            score = self._sentence_score(line, q_terms, option_terms)
+            if "|" in line or "\t" in line or re.search(r"\s{2,}", line):
+                score += 0.8
+            if re.search(r"项目|指标|本期|上期|202[0-9]|金额|比例|单位", line):
+                score += 0.8
+            scored.append((score, idx, line))
+        hit_indices = {idx for score, idx, _ in scored if score > 0}
+        if not hit_indices:
+            return ""
+        keep_indices: set[int] = set()
+        for idx in hit_indices:
+            for neighbor in range(idx - self.table_line_neighbor_window, idx + self.table_line_neighbor_window + 1):
+                if 0 <= neighbor < len(lines):
+                    keep_indices.add(neighbor)
+        for idx, line in enumerate(lines[:6]):
+            if re.search(r"项目|指标|单位|20\d{2}|本期|上期", line):
+                keep_indices.add(idx)
+        kept: list[str] = []
+        total = 0
+        for idx in sorted(keep_indices):
+            line = lines[idx]
+            kept.append(line)
+            total += len(line) + 1
+            if total >= self.max_compressed_chars_per_chunk:
+                break
+        return "\n".join(kept).strip()[: self.max_compressed_chars_per_chunk]
 
     def _query_terms(self, question: Question) -> list[str]:
         raw = [question.question, question.type, *question.options.values()]

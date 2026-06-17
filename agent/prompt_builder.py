@@ -14,6 +14,7 @@ class PromptBuilder:
         prompts = load_yaml(prompts_path)
         self.system_prompt = prompts.get("system", "")
         self.answer_template = prompts["answer_prompt"]
+        self.validation_template = prompts.get("validation_prompt", "")
         self.question_templates = prompts.get("question_templates", {})
         self.domain_guidance = prompts.get("domain_guidance", {})
         self.question_guidance = prompts.get("question_guidance", {})
@@ -39,6 +40,41 @@ class PromptBuilder:
             evidence_context=evidence_context or "未检索到有效证据。",
             analysis_hint=analysis.to_prompt_hint() if analysis else "",
             calculation_context=calculation_context,
+            question_guidance=self.question_guidance.get(question_kind, self.question_guidance.get("default", "")),
+            domain_guidance=self.domain_guidance.get(question.domain, self.domain_guidance.get("default", "")),
+        )
+        messages = []
+        if self.system_prompt.strip():
+            messages.append({"role": "system", "content": self.system_prompt})
+        messages.append({"role": "user", "content": user_prompt})
+        return messages
+
+    def build_validation_messages(
+        self,
+        question: Question,
+        evidence_context: str,
+        first_answer: str,
+        raw_output: str,
+        analysis: QuestionAnalysis | None = None,
+        calculation_context: str = "",
+    ) -> list[dict[str, str]]:
+        if not self.validation_template:
+            return self.build_messages(question, evidence_context, analysis, calculation_context)
+        options = "\n".join(f"{key}. {value}" for key, value in sorted(question.options.items()))
+        question_kind = analysis.kind if analysis else "fact_lookup"
+        user_prompt = self.validation_template.format(
+            qid=question.qid,
+            domain=question.domain,
+            answer_format=question.answer_format,
+            question_type=question.type,
+            question_kind=question_kind,
+            question=question.question,
+            options=options,
+            evidence_context=evidence_context or "未检索到有效证据。",
+            analysis_hint=analysis.to_prompt_hint() if analysis else "",
+            calculation_context=calculation_context,
+            first_answer=first_answer,
+            first_output=raw_output[:3000],
             question_guidance=self.question_guidance.get(question_kind, self.question_guidance.get("default", "")),
             domain_guidance=self.domain_guidance.get(question.domain, self.domain_guidance.get("default", "")),
         )

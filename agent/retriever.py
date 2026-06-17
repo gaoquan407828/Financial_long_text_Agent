@@ -5,8 +5,21 @@ import re
 from collections import OrderedDict
 from typing import Any
 
-from .lexical_index import LexicalIndex, extract_structured_terms
+from .lexical_index import LexicalIndex, extract_structured_terms, normalize_text
 from .schema import EvidenceBundle, EvidenceItem, Question
+
+
+METRIC_TERMS = [
+    "营业收入", "营业总收入", "归母净利润", "归属于上市公司股东的净利润", "经营活动产生的现金流量净额",
+    "经营活动现金流量净额", "经营现金流", "研发投入", "研发费用", "现金分红", "分红金额", "回购",
+    "资产负债率", "发行规模", "发行金额", "注册金额", "主体信用评级", "债项信用评级", "主承销商",
+    "受托管理人", "初始转股价格", "转股价格", "回售", "赎回", "违约", "补偿", "兑付日",
+]
+STRONG_WORDS_RE = re.compile(
+    r"(必须|应当|不得|可以|无需|不能|不|未|无|除外|免除|错误|正确|超过|低于|高于|下降|增长|减少|增加|"
+    r"AAA|AA\+|AA-|A\+|A-|10\s*股|每股|每\s*10\s*股)"
+)
+NUMBER_RE = re.compile(r"20\d{2}|19\d{2}|\d+(?:,\d{3})*(?:\.\d+)?\s*(?:%|亿元|万元|元|倍|日|天|个月|年)?")
 
 
 class Retriever:
@@ -22,6 +35,10 @@ class Retriever:
         self.max_evidence_chars = int(config.get("max_evidence_chars_per_chunk", 1200))
         self.neighbor_window = int(config.get("neighbor_window", 0))
         self.neighbor_max_seed_items = int(config.get("neighbor_max_seed_items", 10))
+        self.rerank_weight = float(config.get("evidence_rerank_weight", 1.0))
+        self.numeric_match_boost = float(config.get("numeric_match_boost", 2.0))
+        self.metric_match_boost = float(config.get("metric_match_boost", 1.4))
+        self.option_match_boost = float(config.get("option_match_boost", 1.2))
         self.chunk_id_to_index = {chunk.chunk_id: idx for idx, chunk in enumerate(self.index.chunks)}
 
     def retrieve(self, question: Question) -> EvidenceBundle:
@@ -73,6 +90,7 @@ class Retriever:
 
         self._add_neighbor_chunks(merged, question)
         items = list(merged.values())
+        self._rerank_items(question, items)
         items.sort(key=lambda item: item.score, reverse=True)
         for idx, item in enumerate(items, start=1):
             item.evidence_id = f"E{idx}"
@@ -189,10 +207,18 @@ class Retriever:
         queries: list[str] = []
         for term in terms:
             queries.append(f"{term} {question.domain}")
+        for metric in self._metric_terms(text):
+            queries.append(f"{metric} {' '.join(self._years(text))} {' '.join(question.doc_ids)}")
+        for option_key, option_text in sorted(question.options.items()):
+            option_metrics = self._metric_terms(option_text)
+            option_numbers = self._numbers(option_text)
+            strong_words = self._strong_words(option_text)
+            if option_metrics or option_numbers or strong_words:
+                queries.append(" ".join([question.question, option_key, *option_metrics, *option_numbers, *strong_words, *question.doc_ids]))
         for doc_id in question.doc_ids:
             queries.append(doc_id)
         queries.extend(self._doc_id_hints(question))
-        return queries[:12]
+        return list(dict.fromkeys(q for q in queries if q.strip()))[:30]
 
     def _doc_id_hints(self, question: Question) -> list[str]:
         text = self._question_query(question)
@@ -204,3 +230,64 @@ class Retriever:
                 h = h.replace("fc_", "", 1)
             normalized.append(h)
         return list(dict.fromkeys(normalized))
+
+    def _rerank_items(self, question: Question, items: list[EvidenceItem]) -> None:
+        if self.rerank_weight <= 0:
+            return
+        question_text = self._question_query(question)
+        q_terms = self._important_terms(question_text)
+        q_numbers = self._numbers(question_text)
+        q_metrics = self._metric_terms(question_text)
+        q_strong = self._strong_words(question_text)
+        option_terms = {key: self._important_terms(value) for key, value in question.options.items()}
+        option_numbers = {key: self._numbers(value) for key, value in question.options.items()}
+        option_metrics = {key: self._metric_terms(value) for key, value in question.options.items()}
+
+        for item in items:
+            text = normalize_text(" ".join([item.title, *item.section_path, item.text]))
+            bonus = 0.0
+            bonus += min(5.0, 0.35 * self._count_contains(text, q_terms))
+            bonus += self.numeric_match_boost * self._count_contains(text, q_numbers)
+            bonus += self.metric_match_boost * self._count_contains(text, q_metrics)
+            bonus += 0.8 * self._count_contains(text, q_strong)
+            if item.option and item.option in question.options:
+                bonus += self.option_match_boost * self._count_contains(text, option_terms[item.option])
+                bonus += self.numeric_match_boost * self._count_contains(text, option_numbers[item.option])
+                bonus += self.metric_match_boost * self._count_contains(text, option_metrics[item.option])
+            if item.doc_id in question.doc_ids:
+                bonus += 1.0
+            if "neighbor_context" in item.matched_terms and bonus < 1.0:
+                bonus -= 0.4
+            item.score += bonus * self.rerank_weight
+
+    def _important_terms(self, text: str) -> list[str]:
+        terms: list[str] = []
+        terms.extend(self._metric_terms(text))
+        terms.extend(self._numbers(text))
+        terms.extend(self._strong_words(text))
+        for token in re.findall(r"《[^》]+》|[\u4e00-\u9fffA-Za-z0-9]{2,18}", text):
+            token = token.strip()
+            if len(token) >= 2 and token not in {"下列", "关于", "根据", "提供", "文档", "选项", "正确", "错误"}:
+                terms.append(token)
+        return list(dict.fromkeys(terms))[:80]
+
+    def _metric_terms(self, text: str) -> list[str]:
+        return [term for term in METRIC_TERMS if term.lower() in text.lower()]
+
+    def _numbers(self, text: str) -> list[str]:
+        return [re.sub(r"\s+", "", m.group(0)) for m in NUMBER_RE.finditer(text)]
+
+    def _years(self, text: str) -> list[str]:
+        return list(dict.fromkeys(re.findall(r"20\d{2}|19\d{2}", text)))
+
+    def _strong_words(self, text: str) -> list[str]:
+        return list(dict.fromkeys(m.group(0) for m in STRONG_WORDS_RE.finditer(text)))
+
+    def _count_contains(self, text: str, terms: list[str]) -> int:
+        count = 0
+        normalized_text = re.sub(r"\s+", "", text.lower())
+        for term in terms:
+            normalized_term = re.sub(r"\s+", "", term.lower())
+            if normalized_term and normalized_term in normalized_text:
+                count += 1
+        return count

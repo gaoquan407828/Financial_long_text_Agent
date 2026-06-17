@@ -35,6 +35,7 @@ answer_prompt: |
   - mcq/tf 只输出一个字母；multi 输出所有正确选项，按字母排序，无分隔符。
   - 证据不足时保守判断，不要用外部知识补充。
   - 输出尽量短，reason 不超过 20 个汉字。
+  - confidence 输出 0 到 1 的小数，表示证据充分程度，不要照抄示例值。
 
   领域提示：{domain_guidance}
   题型提示：{question_guidance}
@@ -49,6 +50,49 @@ answer_prompt: |
 
   输出格式：
   {{"answer":"A","judgements":{{"A":true,"B":false,"C":false,"D":false}},"e":["E1"],"confidence":0.0}}
+
+validation_prompt: |
+  只返回 JSON，不要 Markdown，不要解释性前后缀。
+
+  你现在做二次核验：检查初答是否真的被证据支持；如不支持，修正答案。
+
+  选项：
+  {options}
+
+  题干：
+  qid: {qid}
+  domain: {domain}
+  answer_format: {answer_format}
+  question_type: {question_type}
+  question_kind: {question_kind}
+  {question}
+
+  初答：
+  {first_answer}
+
+  初答原始输出：
+  {first_output}
+
+  核验规则：
+  - 逐项核验选项，不能只相信初答。
+  - multi 输出所有被证据直接支持的正确选项，按字母排序。
+  - mcq/tf 只输出一个字母。
+  - 计算/比较题必须核对主体、年份、单位和口径。
+  - 发现证据不足或偷换概念时，将对应选项判 false。
+  - confidence 输出 0 到 1 的小数，表示最终证据充分程度。
+
+  领域提示：{domain_guidance}
+  题型提示：{question_guidance}
+  题型识别：
+  {analysis_hint}
+
+  {calculation_context}
+
+  证据：
+  {evidence_context}
+
+  输出格式：
+  {{"answer":"A","judgements":{{"A":true,"B":false,"C":false,"D":false}},"e":["E1"],"confidence":0.8}}
 
 question_templates:
   calculation: |
@@ -70,6 +114,7 @@ question_templates:
     - 回到证据核对：主体、年份、单位、指标口径、同比/占比/差额公式。
     - 代码结果和证据口径冲突时，以证据原文和正确公式为准。
     - 只返回 JSON，reason 不超过 20 个汉字。
+    - confidence 输出 0 到 1 的小数，表示证据充分程度，不要照抄示例值。
 
     领域提示：{domain_guidance}
     题型提示：{question_guidance}
@@ -103,6 +148,7 @@ question_templates:
     - 这是比较题，先找每个比较对象的同口径证据。
     - 年份、主体、产品、单位、条款名不同则不能直接比较。
     - 只返回 JSON，reason 不超过 20 个汉字。
+    - confidence 输出 0 到 1 的小数，表示证据充分程度，不要照抄示例值。
 
     领域提示：{domain_guidance}
     题型提示：{question_guidance}
@@ -135,6 +181,7 @@ question_templates:
     - 这是判断题，重点检查强约束词、否定词、适用条件和例外。
     - 不要因为语义相似就判真，必须能被证据直接支持。
     - 只返回 JSON，reason 不超过 20 个汉字。
+    - confidence 输出 0 到 1 的小数，表示证据充分程度，不要照抄示例值。
 
     领域提示：{domain_guidance}
     题型提示：{question_guidance}
@@ -167,6 +214,7 @@ question_templates:
     - 这是事实定位题，优先使用最直接 evidence_id。
     - 多文档时不要混淆 doc_id、年份、公司或产品。
     - 只返回 JSON，reason 不超过 20 个汉字。
+    - confidence 输出 0 到 1 的小数，表示证据充分程度，不要照抄示例值。
 
     领域提示：{domain_guidance}
     题型提示：{question_guidance}
